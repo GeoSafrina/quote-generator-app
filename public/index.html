@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Quote Generator</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: linear-gradient(135deg,#ecfdf5,#eff6ff); min-height: 100vh; color: #1f2937; padding: 24px 16px; }
+  .container { max-width: 760px; margin: 0 auto; }
+  h1 { text-align: center; color: #059669; margin-bottom: 18px; }
+  h2 { margin: 28px 0 10px; font-size: 1.1rem; color: #374151; }
+  .box { background: #fff; border-radius: 16px; padding: 24px; box-shadow: 0 6px 18px rgba(5,150,105,.12); text-align: center; }
+  #quote { font-size: 1.3rem; line-height: 1.5; margin-bottom: 10px; min-height: 60px; }
+  #author { color: #6b7280; margin-bottom: 6px; }
+  #source { font-size: .75rem; color: #9ca3af; margin-bottom: 14px; }
+  .actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button { border: none; cursor: pointer; font: inherit; font-weight: 600; border-radius: 10px; padding: 10px 16px; }
+  .primary { background: #059669; color: #fff; }
+  .secondary { background: #d1fae5; color: #047857; }
+  .ghost { background: #f3f4f6; color: #374151; }
+  .danger { background: #fee2e2; color: #b91c1c; }
+  button:disabled { opacity: .6; cursor: wait; }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters input, .filters select { padding: 10px; border: 1px solid #d1d5db; border-radius: 10px; font: inherit; }
+  .filters input { flex: 1; min-width: 160px; }
+  .fav { background: #fff; border-radius: 12px; padding: 14px; margin-bottom: 10px; box-shadow: 0 3px 10px rgba(0,0,0,.06); }
+  .fav p { margin-bottom: 6px; word-break: break-word; }
+  .fav small { color: #6b7280; display: block; margin-bottom: 10px; }
+  .tag { background: #d1fae5; color: #047857; border-radius: 999px; padding: 2px 8px; font-size: .72rem; margin-left: 6px; }
+  .empty, .msg { text-align: center; color: #6b7280; padding: 16px; }
+  .msg.err { color: #b91c1c; }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #111827; color: #fff; padding: 10px 16px; border-radius: 10px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>💬 Quote Generator</h1>
+
+  <div class="box">
+    <p id="quote">Loading...</p>
+    <p id="author"></p>
+    <p id="source"></p>
+    <div class="actions">
+      <button class="primary" id="new-btn">New Quote</button>
+      <button class="secondary" id="save-btn">❤ Save Favorite</button>
+      <button class="ghost" id="copy-btn">📋 Copy</button>
+    </div>
+  </div>
+
+  <h2>Favorites history</h2>
+  <div class="filters">
+    <input id="search" type="search" placeholder="Search favorites..." />
+    <select id="topic"><option value="">All topics</option></select>
+  </div>
+  <div id="msg" class="msg err" hidden></div>
+  <div id="favs"></div>
+</div>
+<div id="toast"></div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  let current = null;
+
+  function toast(text) {
+    const t = $("toast");
+    t.textContent = text;
+    t.classList.add("show");
+    setTimeout(() => t.classList.remove("show"), 1800);
+  }
+  function showError(text) { $("msg").textContent = text || ""; $("msg").hidden = !text; }
+
+  async function copyText(text) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); ta.remove();
+    }
+    toast("Copied to clipboard!");
+  }
+
+  async function newQuote() {
+    $("new-btn").disabled = true;
+    try {
+      const res = await fetch("/api/quote/random");
+      current = await res.json();
+      $("quote").textContent = "“" + current.text + "”";
+      $("author").textContent = "— " + current.author;
+      $("source").textContent = current.source === "api" ? "Source: public API" : "Source: local fallback data (API unavailable)";
+    } catch {
+      $("quote").textContent = "Could not load a quote. Please try again.";
+    } finally {
+      $("new-btn").disabled = false;
+    }
+  }
+
+  async function saveFav() {
+    if (!current) return;
+    try {
+      const res = await fetch("/api/favorites", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: current.text, author: current.author, topic: current.topic || "General" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      toast("Saved to favorites!");
+      loadFavs();
+    } catch (err) { toast(err.message || "Could not save"); }
+  }
+
+  async function removeFav(id) {
+    try {
+      const res = await fetch("/api/favorites/" + id, { method: "DELETE" });
+      if (!res.ok) throw new Error("Could not remove");
+      loadFavs();
+    } catch (err) { showError(err.message); }
+  }
+
+  async function loadFavs() {
+    try {
+      const params = new URLSearchParams({ search: $("search").value, topic: $("topic").value });
+      const res = await fetch("/api/favorites?" + params);
+      const list = await res.json();
+      renderFavs(list);
+      showError("");
+    } catch { showError("Could not load favorites."); }
+  }
+
+  const seenTopics = new Set();
+  function updateTopics(list) {
+    list.forEach((f) => {
+      if (!seenTopics.has(f.topic)) {
+        seenTopics.add(f.topic);
+        const o = document.createElement("option");
+        o.value = f.topic; o.textContent = f.topic;
+        $("topic").appendChild(o);
+      }
+    });
+  }
+
+  function renderFavs(list) {
+    updateTopics(list);
+    const box = $("favs");
+    box.innerHTML = "";
+    if (!list.length) { box.innerHTML = '<div class="empty">No favorites yet. Save a quote above!</div>'; return; }
+    list.forEach((f) => {
+      const d = document.createElement("div"); d.className = "fav";
+      const p = document.createElement("p"); p.textContent = "“" + f.text + "”";
+      const s = document.createElement("small");
+      s.textContent = "— " + f.author + "  ·  " + new Date(f.savedAt).toLocaleString();
+      const tag = document.createElement("span"); tag.className = "tag"; tag.textContent = f.topic; s.appendChild(tag);
+      const row = document.createElement("div"); row.className = "actions"; row.style.justifyContent = "flex-start";
+      const c = document.createElement("button"); c.className = "ghost"; c.textContent = "📋 Copy"; c.onclick = () => copyText(f.text + " — " + f.author);
+      const x = document.createElement("button"); x.className = "danger"; x.textContent = "Remove"; x.onclick = () => removeFav(f.id);
+      row.append(c, x);
+      d.append(p, s, row);
+      box.appendChild(d);
+    });
+  }
+
+  $("new-btn").onclick = newQuote;
+  $("save-btn").onclick = saveFav;
+  $("copy-btn").onclick = () => current && copyText(current.text + " — " + current.author);
+  let t; $("search").oninput = () => { clearTimeout(t); t = setTimeout(loadFavs, 250); };
+  $("topic").onchange = loadFavs;
+
+  newQuote();
+  loadFavs();
+</script>
+</body>
+</html>
